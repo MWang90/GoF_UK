@@ -1,0 +1,135 @@
+---
+title: "GoF_DK"
+output: html_notebook
+---
+# 0. Load packages
+```{r}
+library(tidyverse)
+library(patchwork)
+rm(list = ls())
+```
+
+# 1. Read data
+```{r}
+ref = read.csv("./ReadData/magzone_Newark.csv")
+series = read.csv("./ReadData/magzoneDK.csv", check.names = F, row.names = 1)
+n = nrow(series) # number of chron
+k = ncol(series) # number of age model
+```
+
+# 2. Calculate GoF
+```{r}
+series = series %>% mutate(across(everything(), cumsum))
+ref.list = compact(slider::slide(ref$Duration, cumsum, .after = nrow(series)-1, .step = 2, .complete = T))
+m = length(ref.list) # number of correlation scheme
+ref.cum = as.data.frame(ref.list, col.names = c(1:m), check.names = F)
+
+series.mean = colMeans(series)
+GoF = tibble()
+UK.Complete=tibble()
+NW.Complete=tibble()
+
+Scheme.all = ref %>% filter(if_any(Chron, ~ str_ends(.x, "r"))) %>% mutate("UK" = rep("SA4r")) %>% unite(new, Chron, UK, sep = "≡")
+result = tibble("Scheme" = rep(Scheme.all$new[1:m], times = k), 
+                "Agemodel" = rep(c("404kyr","100kyr","38kyr","21kyr"), each = m),
+                "p" = NA)
+
+for (i in 1:ncol(series)) {
+  for (j in 1:m) {
+    GoF[j,i] = 1 - sum((series[,i] - ref.cum[,j])^2) / sum((series[,i] - series.mean[i])^2)
+    UK.Complete[j,i] = ifelse(series[n,i] <= ref.cum[n,j], series[n,i]/ref.cum[n,j]*100, NA)
+    NW.Complete[j,i] = ifelse(series[n,i] >= ref.cum[n,j], ref.cum[n,j]/series[n,i]*100, NA)
+  }
+}
+
+result = add_column(result, GoF.all =as.matrix(gather(GoF)[,2]), UK.Complete = as.matrix(gather(UK.Complete)[,2]), NW.Complete = as.matrix(gather(NW.Complete)[,2]))
+```
+
+# 3. Calculate p value
+```{r}
+set.seed(2)
+mcn = 100000  # number of Monte Carlo
+r.mcn = cumsum(as_tibble(matrix(runif(n*mcn), nrow = n)))
+r.series = cumsum(as_tibble(matrix(runif(n), nrow = n)))
+r.series.mean = colMeans(r.series)
+r.GoF = rep(NA, times = mcn)
+
+for (c in 1:mcn) {
+    r.GoF[c] = 1-sum((r.series - r.mcn[,c])^2)/sum((r.series - r.series.mean)^2)
+}
+
+for (l in 1:nrow(result)) {
+  result$p[l] =sum(r.GoF > result$GoF.all[l])/mcn
+}
+```
+
+# 4. Save outputs
+```{r}
+# write_rds(result, "./Outputs/result.rds")
+# write.table(result, "./Outputs/result.csv", row.names = F)
+
+result$Agemodel = factor(result$Agemodel, levels = colnames(series))
+result$Scheme = factor(result$Scheme, levels = rev(Scheme.all$new))
+
+# plot GoF
+p1 = ggplot(data = result, mapping = aes(x = UK.Complete, y = Scheme, shape = Agemodel, color = GoF.all)) +
+  geom_point(size = 5) + 
+  scale_shape_manual(values = c(15:18)) +
+  #scale_colour_viridis_c(limits = c(0.5, 1), direction = -1) +
+  scale_colour_steps(low = "white", high = "darkred", limits = c(0.5, 1)) +
+  #scale_colour_fermenter(limits = c(0.5, 1), palette = "Reds", direction= 1) +
+  scale_x_continuous(breaks = seq(0, 100, by = 20), labels = seq(0, 100, by = 20), limits = c(0, 100)) +
+  labs(x = "St. Audrie's Bay", y = "Correlation scheme", shape = "Age model", color = "Goodness-of-fit") +
+  theme_light()
+  # theme(legend.position = "none")
+
+p2 = ggplot(data = result, mapping = aes(x = NW.Complete, y = Scheme, shape = Agemodel, color = GoF.all))+
+  geom_point(size = 5) + 
+  scale_shape_manual(values = c(15:18)) +
+  #scale_colour_gradient(low = "white", high = "darkred", limits = c(0.5, 1)) +
+  #scale_colour_fermenter(limits = c(0.5, 1), palette = "Reds", direction= 1) +
+  scale_colour_steps(low = "white", high = "darkred", limits = c(0.5, 1)) +
+  scale_x_continuous(breaks = seq(0, 100, by = 20), labels = seq(0, 100, by = 20)) +
+  scale_x_reverse() +
+  coord_cartesian(xlim = c(100, 0)) +
+  labs(x = "Newark Basin", y = "Correlation scheme", shape = "Age model", color = "Goodness-of-fit") +
+  theme_light() +
+  theme(axis.title.y = element_blank(), axis.text.y = element_blank(), axis.ticks.y = element_blank()) 
+
+p1 + p2 + plot_layout(guides='collect')
+
+# plot p value
+p3 = ggplot(data = result, mapping = aes(x = UK.Complete, y = Scheme, shape = Agemodel, color = p)) +
+  geom_point(size = 5) + 
+  scale_shape_manual(values = c(15:18)) +
+  #scale_colour_viridis_c(limits = c(0, 0.1), direction = 1) +
+  #scale_colour_gradient(low = "white", high = "darkred", limits = c(0, 0.1)) +
+  #scale_colour_fermenter(limits = c(0, 0.1), palette = "Reds", direction= -1) +
+  scale_colour_steps(low = "darkred", high = "white", limits = c(0, 0.1)) +
+  scale_x_continuous(breaks = seq(0, 100, by = 20), labels = seq(0, 100, by = 20), limits = c(0, 100)) +
+  labs(x = "St. Audrie's Bay", y = "Correlation scheme", shape = "Age model", color = "p value") +
+  guides(color = guide_colorbar(reverse = TRUE)) +
+  theme_light() +
+  theme(axis.title.y = element_blank(), axis.text.y = element_blank(), axis.ticks.y = element_blank())
+  # theme(legend.position = "none")
+
+p4 = ggplot(data = result, mapping = aes(x = NW.Complete, y = Scheme, shape = Agemodel, color = p))+
+  geom_point(size = 5) + 
+  scale_shape_manual(values = c(15:18)) +
+  # scale_colour_viridis_c(limits = c(0, 0.1), direction = 1) +
+  #scale_colour_gradient(low = "white", high = "darkred", limits = c(0, 0.1)) +
+  #scale_colour_fermenter(limits = c(0, 0.1), palette = "Reds", direction= -1) +
+  scale_colour_steps(low = "darkred", high = "white", limits = c(0, 0.1)) +
+  scale_x_continuous(breaks = seq(0, 100, by = 20), labels = seq(0, 100, by = 20)) +
+  scale_x_reverse() +
+  coord_cartesian(xlim = c(100, 0)) +
+  labs(x = "Newark Basin", y = "Correlation scheme", shape = "Age model", color = "p value") +
+  guides(color = guide_colorbar(reverse = TRUE)) +
+  theme_light() +
+  theme(axis.title.y = element_blank(), axis.text.y = element_blank(), axis.ticks.y = element_blank())
+
+p3 + p4 + plot_layout(guides='collect')
+
+ggsave((p1 | p2 | p3 | p4) + plot_layout(guides='collect'), filename = paste0("GoF_DK", Sys.time(), ".pdf"), width = 16, height = 8, dpi = 300)
+# ggsave(p3 + p4 + plot_layout(guides='collect'), filename = paste0("pValue_MW", n, ".pdf"), width = 12, dpi = 300)
+```
